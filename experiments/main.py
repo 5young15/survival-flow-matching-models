@@ -27,13 +27,15 @@ from run_experiments import (
 
 def parse_args():
     parser = argparse.ArgumentParser(description='FlowSurv Simulation Experiments')
-    parser.add_argument('--quick', action='store_true', help='Quick test mode (2 repeats)')
+    parser.add_argument('--quick', action='store_true', help='Quick test mode (1 repeat, 5 epochs)')
     parser.add_argument('--full', action='store_true', help='Full experiment mode (10 repeats)')
+    parser.add_argument('--repeats', type=int, default=None, help='Number of repeats (overrides quick/full)')
     parser.add_argument('--models', nargs='+', default=None, help='Models to run (default: all)')
     parser.add_argument('--groups', nargs='+', default=None, help='Experiment groups to run (default: all)')
     parser.add_argument('--output', type=str, default='results', help='Output directory')
     parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint directory')
     parser.add_argument('--seed', type=int, default=None, help='Override base random seed')
+    parser.add_argument('--device', type=str, default=None, help='Device to use (cuda/cpu)')
     return parser.parse_args()
 
 
@@ -49,9 +51,32 @@ def main():
     if args.seed is not None:
         CONFIG.experiment.base_seed = args.seed
 
+    # Device selection
+    device = torch.device(args.device) if args.device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}")
+
+    # Quick mode: Reduce epochs for fast testing
+    if args.quick:
+        print("\n[QUICK MODE] Overriding configuration for fast testing:")
+        for model_name, model_cfg in CONFIG.model.configs.items():
+            if 'EPOCHS' in model_cfg:
+                model_cfg['EPOCHS'] = min(model_cfg['EPOCHS'], 5)
+                print(f"  - {model_name}: EPOCHS = {model_cfg['EPOCHS']}")
+            if 'WEIBULL_EPOCHS' in model_cfg:
+                model_cfg['WEIBULL_EPOCHS'] = min(model_cfg['WEIBULL_EPOCHS'], 5)
+                print(f"  - {model_name}: WEIBULL_EPOCHS = {model_cfg['WEIBULL_EPOCHS']}")
+    
     print_config_summary()
 
-    n_repeats = 2 if args.quick else (10 if args.full else CONFIG.experiment.n_repeats)
+    # Determine n_repeats
+    if args.repeats is not None:
+        n_repeats = args.repeats
+    elif args.quick:
+        n_repeats = 1
+    elif args.full:
+        n_repeats = 10
+    else:
+        n_repeats = CONFIG.experiment.n_repeats
 
     model_names = args.models
     if model_names is None:
@@ -72,7 +97,8 @@ def main():
         n_repeats=n_repeats,
         save_results=True,
         output_dir=args.output,
-        checkpoint_dir=args.checkpoint
+        checkpoint_dir=args.checkpoint,
+        device=device
     )
 
     aggregated = aggregate_results(results)

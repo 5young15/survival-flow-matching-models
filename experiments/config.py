@@ -142,10 +142,11 @@ class ModelConfig:
         },
         'RSF': {
             'n_estimators': 100,
-            'max_depth': None,
-            'min_samples_split': 6,
-            'min_samples_leaf': 3,
+            'max_depth': 10,  # 限制深度以减少大样本下的内存占用
+            'min_samples_split': 10,
+            'min_samples_leaf': 5,
             'random_state': 42,
+            'n_jobs': 4,      # 限制并行数以减少内存峰值
         },
         'DeepHit': {
             'hidden_dims': [32, 16, 8],

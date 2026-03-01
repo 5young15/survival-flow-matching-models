@@ -83,3 +83,17 @@ class WeibullAFT(TorchSurvivalModel):
             h = (k / lam) * torch.pow(t_lam, k - 1)
             h = torch.clamp(h, min=0.0, max=1000.0)
             return torch.log(h + 1e-8)
+
+    def compute_density(self, features: torch.Tensor, time_grid: torch.Tensor, **kwargs) -> torch.Tensor:
+        """计算概率密度函数 f(t|x) (原始空间)"""
+        device = features.device
+        time_grid = time_grid.to(device)
+        with torch.no_grad():
+            params = self.net(features)
+            k = torch.exp(torch.clamp(params[:, 0], -5, 5)).unsqueeze(-1)
+            lam = torch.exp(torch.clamp(params[:, 1], -5, 5)).unsqueeze(-1)
+            t = time_grid.unsqueeze(0)
+            t_lam = t / lam
+            term_pow = torch.pow(t_lam, k)
+            f = (k / lam) * torch.pow(t_lam, k - 1) * torch.exp(-term_pow)
+            return torch.clamp(f, min=0.0, max=1000.0)

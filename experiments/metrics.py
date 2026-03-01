@@ -454,7 +454,7 @@ def compute_all_metrics(times: Union[torch.Tensor, np.ndarray, None],
     """
     计算所有评估指标 (统一使用 Tensor 输入)
     
-    注意: hazard 和 density 输入应为对数空间值
+    注意: hazard 输入应为对数空间值，而 density 输入应为原始空间值
     """
     def to_tensor(x, device):
         if x is None: return None
@@ -503,10 +503,9 @@ def compute_all_metrics(times: Union[torch.Tensor, np.ndarray, None],
     
     if true_density is not None and pred_density is not None:
         # 密度函数 MSE/MAE 在原始空间计算
-        true_density_raw = torch.exp(true_density)
-        pred_density_raw = torch.exp(pred_density)
-        density_mse_val = density_mse(true_density_raw, pred_density_raw)
-        density_mae_val = density_mae(true_density_raw, pred_density_raw)
+        # 注意: 输入 true_density 和 pred_density 已为原始空间值
+        density_mse_val = density_mse(true_density, pred_density)
+        density_mae_val = density_mae(true_density, pred_density)
     
     if true_survival is not None and pred_survival is not None:
         w1_val = wasserstein_1_distance(true_survival, pred_survival, time_grid)

@@ -59,15 +59,29 @@ class RandomSurvivalForestWrapper(TorchSurvivalModel):
             raise RuntimeError("Model not fitted.")
         device = features.device
         features_np = features.detach().cpu().numpy()
-        surv_funcs = self.model.predict_survival_function(features_np)
+        
+        # 默认网格
         if time_grid is None:
             time_grid_np = np.linspace(0, 10, 100)
         else:
             time_grid = time_grid.to(device) if isinstance(time_grid, torch.Tensor) else torch.tensor(time_grid, device=device)
             time_grid_np = time_grid.cpu().numpy()
-        S = np.zeros((features_np.shape[0], len(time_grid_np)))
-        for i, fn in enumerate(surv_funcs):
-            S[i] = fn(time_grid_np)
+
+        # 分批处理以降低内存占用 (对于 E8, E10 等大样本场景)
+        batch_size = 2000
+        n_samples = features_np.shape[0]
+        S = np.zeros((n_samples, len(time_grid_np)))
+        
+        for start_idx in range(0, n_samples, batch_size):
+            end_idx = min(start_idx + batch_size, n_samples)
+            batch_features = features_np[start_idx:end_idx]
+            
+            # scikit-survival 的 predict_survival_function 会返回 StepFunction 对象数组
+            # 在样本量大且 grid 细时非常消耗内存
+            surv_funcs = self.model.predict_survival_function(batch_features)
+            for i, fn in enumerate(surv_funcs):
+                S[start_idx + i] = fn(time_grid_np)
+                
         return torch.from_numpy(S).to(device=device, dtype=torch.float32)
 
     def predict_time(self, features: torch.Tensor, **kwargs) -> torch.Tensor:
