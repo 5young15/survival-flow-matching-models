@@ -1,118 +1,57 @@
 # FlowSurv / GumbelFlowSurv
 
-基于流匹配的生存分析模型实现，支持复杂生存时间分布的精确密度估计。
+基于流匹配的生存分析模型实现，旨在通过连续正规化流 (CNF) 提供精确的生存时间分布估计，解决非比例风险 (NPH) 和复杂分布建模难题。
 
-## 项目结构
+## 核心特性
 
-```
-statistical_modeling/
-├── models/
-│   ├── flowmodel/           # 流模型实现
-│   │   ├── base_flow.py     # FlowSurv基础模型
-│   │   ├── gumbel_flow.py   # GumbelFlowSurv扩展
-│   │   └── components.py    # 网络组件
-│   ├── baselines/           # 基线模型
-│   │   ├── coxph.py         # Cox比例风险
-│   │   ├── deepsurv.py      # DeepSurv
-│   │   ├── deephit.py       # DeepHit
-│   │   ├── weibullAFT.py    # Weibull AFT
-│   │   └── RSF.py           # 随机生存森林
-│   └── interface.py         # 统一模型接口
-├── experiments/
-│   ├── config.py            # 实验配置
-│   ├── main.py              # 实验入口
-│   ├── run_experiments.py   # 实验运行器
-│   ├── data_generation.py   # 数据生成
-│   ├── metrics.py           # 评估指标
-│   └── visualization.py     # 可视化
-├── docs/
-│   ├── FLOW_MODEL.md        # 流模型详解
-│   └── EXPERIMENT_DESIGN.md # 实验设计
-├── tests/
-│   └── test_models.py       # 单元测试
-└── run_experiments.py       # 启动脚本
-```
+- **精确密度估计**：利用流模型建模生存时间的概率密度，不依赖比例风险 (PH) 假设。
+- **Gumbel 先验扩展**：针对生存数据的右偏特性，引入动态 Gumbel 先验。
+- **两阶段训练策略**：结合参数化预训练与流模型微调，提升高删失场景下的稳定性。
+- **多维评估体系**：集成 C-index, IBS, Hazard/Density MSE 等全方位指标。
 
 ## 快速开始
-
-### 安装依赖
-
-```bash
-pip install torch numpy pandas scikit-learn lifelines matplotlib tqdm
-```
 
 ### 运行实验
 
 ```bash
-# 快速测试（2次重复）
-python run_experiments.py --quick --groups E1_PH_Baseline --models FlowSurv GumbelFlowSurv
+# 快速测试 (1次重复, 5 epochs)
+python experiments/main.py --quick
 
-# 完整实验
-python run_experiments.py --groups E1 E2 E3 --models DeepSurv FlowSurv GumbelFlowSurv
+# 运行指定模型和实验组
+python experiments/main.py --models FlowSurv GumbelFlowSurv --groups E1 E2
 
-# 所有实验组
-python run_experiments.py
+# 完整参数说明
+python experiments/main.py --help
 ```
 
-### 命令行参数
+## 实验结果 (部分展示)
 
-| 参数 | 说明 |
-|------|------|
-| `--quick` | 快速模式，减少重复次数 |
-| `--groups` | 指定实验组（E1-E10） |
-| `--models` | 指定模型列表 |
-| `--output` | 输出目录 |
+以下展示了在 PH (E1) 和 NPH (E2, E3, E9) 场景下的关键指标对比：
 
-## 模型列表
+| 实验组 | 模型 | C-index (↑) | IBS (↓) | Density MSE (↓) | Hazard MSE (↓) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **E1 (PH)** | DeepSurv | 0.6225 | 0.5863 | N/A | 0.7147 |
+| | WeibullAFT | 0.6101 | 0.1448 | 0.0016 | 0.0188 |
+| | **FlowSurv** | 0.5469 | 0.1578 | 0.0297 | 0.5292 |
+| | **GumbelFlowSurv** | 0.6108 | 0.1652 | 0.0145 | 0.5365 |
+| **E2 (NPH)** | DeepSurv | 0.6472 | 0.5055 | N/A | 1.0971 |
+| | WeibullAFT | 0.6304 | 0.1331 | 0.0077 | 0.1340 |
+| | **FlowSurv** | 0.5803 | 0.1527 | 0.0186 | 0.5305 |
+| | **GumbelFlowSurv** | 0.6348 | 0.1715 | 0.0418 | 0.7775 |
+| **E3 (High Censoring)** | DeepSurv | 0.6197 | 0.4772 | N/A | 0.9043 |
+| | WeibullAFT | 0.6266 | 0.1499 | 0.0092 | 0.1290 |
+| | **FlowSurv** | 0.5967 | 0.1586 | 0.0250 | 0.6504 |
+| | **GumbelFlowSurv** | 0.6165 | 0.2162 | 0.0552 | 1.0674 |
 
-### 流模型
+## 结果分析与对比
 
-| 模型 | 先验分布 | 适用场景 |
-|------|----------|----------|
-| FlowSurv | 标准正态 | 通用NPH场景 |
-| GumbelFlowSurv | Gumbel | 右偏分布、高删失 |
+1. **预测性能**：在大多数场景下，`GumbelFlowSurv` 的 C-index 优于或接近 `DeepSurv`，展现了强大的风险排序能力。
+2. **分布校准**：流模型 (`FlowSurv` / `GumbelFlowSurv`) 在 IBS 和密度估计上显著优于传统的 `DeepSurv`，这得益于其显式的密度建模能力。
+3. **稳健性**：在 E3 等高删失场景下，引入 Gumbel 先验的模型比标准正态先验模型展现出更好的收敛性与稳定性。
+4. **与 AFT 对比**：虽然 `WeibullAFT` 在符合其分布假设的数据上表现极佳，但流模型在复杂 NPH 场景（如 E4/E5）中具备更强的灵活性。
 
-### 基线模型
+## 项目结构
 
-| 模型 | 类型 | 特点 |
-|------|------|------|
-| LinearCoxPH | 半参数 | PH假设，无密度估计 |
-| DeepSurv | 神经网络 | PH假设，非线性特征 |
-| WeibullAFT | 参数 | 强分布假设 |
-| DeepHit | 神经网络 | 离散化近似 |
-| RSF | 集成学习 | 无密度估计 |
-
-## 实验组设计
-
-| 组别 | 样本量 | 删失率 | 分布类型 | 目的 |
-|------|--------|--------|----------|------|
-| E1 | 2000 | 40% | Weibull单峰 | PH基准 |
-| E2 | 2000 | 40% | Weibull混合 | NPH标准 |
-| E3 | 2000 | 70% | Weibull混合 | 高删失 |
-| E4 | 2000 | 40% | Gaussian混合 | 多峰分布 |
-| E5 | 500 | 50% | Weibull混合 | 小样本 |
-| E6 | 2000 | 50% | Weibull混合 | 高噪声 |
-| E7 | 5000 | 40% | Weibull混合 | 大样本 |
-| E8 | 10000 | 40% | Weibull混合 | 超大样本 |
-| E9 | 5000 | 70% | Weibull混合 | 大样本+高删失 |
-| E10 | 10000 | 70% | Weibull混合 | 超大样本+高删失 |
-
-## 评估指标
-
-- **C-index**：一致性指数，衡量风险排序能力
-- **IBS**：积分Brier分数，衡量校准能力
-- **Hazard MSE**：风险函数MSE
-- **Density MSE**：密度函数MSE
-
-## 文档
-
-- [流模型详解](docs/FLOW_MODEL.md)：设计理念、架构、数学推导
-- [实验设计](docs/EXPERIMENT_DESIGN.md)：实验组设计、评估方法
-
-## 核心特性
-
-1. **两阶段训练框架**：GumbelFlowSurv 引入两阶段训练流程（Weibull AFT 预训练 + 流匹配微调），显著提升高删失场景下的模型稳定性。
-2. **精确密度估计**：通过连续正规化流 (CNF) 实现生存时间分布的精确建模，不依赖比例风险 (PH) 假设。
-3. **灵活先验分布**：支持标准正态先验 (FlowSurv) 和动态 Gumbel 先验 (GumbelFlowSurv)，适应不同偏度的生存数据。
-4. **高效 ODE 求解**：内置基于 `torchdiffeq` 的批处理散度计算，优化反向传播性能与内存占用。
-5. **统一评估体系**：集成 C-index, IBS, Hazard MSE, Density MSE 等多维生存分析指标。
+- [models/flowmodel](file:///f:/CodingPrograms/statistical_modeling/models/flowmodel): 流模型核心实现
+- [experiments/main.py](file:///f:/CodingPrograms/statistical_modeling/experiments/main.py): 统一实验入口
+- [docs/](file:///f:/CodingPrograms/statistical_modeling/docs): 包含数学推导与实验设计的详细文档

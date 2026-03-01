@@ -630,7 +630,7 @@ class RSFTrainer(ModelTrainer):
         if isinstance(time_grid, np.ndarray):
             time_grid = torch.from_numpy(time_grid).float().to(features.device if isinstance(features, torch.Tensor) else 'cpu')
 
-        risk_scores = self.model.predict_risk(features, time_grid)
+        risk_scores = self.model.predict_risk(features)
         survival = self.model.predict_survival_function(features, time_grid)
         pred_medians = self.model.predict_time(features)
 
@@ -772,7 +772,19 @@ def run_single_experiment(
     time_grid = full_data.time_grid
     predictions = trainer.predict(test_data, time_grid)
 
-    # 计算评估指标
+    # 计算评估指标 (确保传入的是对数空间)
+    eps = 1e-100
+    
+    # 提取预测结果并处理 None 值
+    pred_hazard = predictions.get('log_hazard')
+    pred_density_raw = predictions.get('log_density')
+    
+    # 安全地计算 exp(log_density)
+    if pred_density_raw is not None:
+        pred_density = torch.exp(pred_density_raw)
+    else:
+        pred_density = None
+
     metrics = compute_all_metrics(
         times=test_data.times,
         events=test_data.events,
@@ -780,12 +792,12 @@ def run_single_experiment(
         pred_survival=predictions['survival'],
         pred_medians=predictions['medians'],
         time_grid=time_grid,
-        true_hazard=test_data.true_hazard,
-        true_density=test_data.true_density,
+        true_hazard=torch.log(torch.clamp(test_data.true_hazard, min=eps)) if test_data.true_hazard is not None else None,
+        true_density=test_data.true_density if test_data.true_density is not None else None,
         true_survival=test_data.true_survival,
         true_medians=true_medians,
-        pred_hazard=predictions['log_hazard'],
-        pred_density=predictions['log_density'],
+        pred_hazard=pred_hazard,
+        pred_density=pred_density,
         quantiles=config.experiment.time_quantiles,
         max_weight=config.experiment.ipcw_max_weight
     )
@@ -1115,48 +1127,16 @@ def print_results_table(aggregated: Dict, metric_name: str = 'c_index'):
         print(row)
 
 
+# 注意：该脚本现已作为模块使用。
+# 请使用 main.py 作为主程序入口运行实验。
+
 if __name__ == "__main__":
-    """
-    主程序入口
-    
-    执行流程:
-    1. 打印实验配置信息
-    2. 运行所有实验
-    3. 聚合结果
-    4. 打印结果表格 (C-index 和 IBS)
-    """
     print("=" * 60)
-    print("FlowSurv / GumbelFlowSurv Simulation Experiments")
+    print("Survival Analysis Experiment Module")
     print("=" * 60)
-
-    config = CONFIG
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"\nDevice: {device}")
-    print(f"Number of repeats: {config.experiment.n_repeats}")
-    print(f"Number of experiment groups: {len(config.experiment.groups)}")
-    print(f"Number of models: {len(config.model.configs)}")
-
-    # 定义要运行的模型列表
-    model_names = ['LinearCoxPH', 'DeepSurv', 'WeibullAFT', 'RSF', 'DeepHit', 'FlowSurv', 'GumbelFlowSurv']
-
-    # 运行所有实验
-    results = run_all_experiments(
-        config,
-        model_names=model_names,
-        n_repeats=3,
-        save_results=True
-    )
-
-    # 聚合结果
-    aggregated = aggregate_results(results)
-
-    # 打印结果表格
-    print("\n" + "=" * 80)
-    print("SUMMARY RESULTS")
-    print("=" * 80)
-
-    print_results_table(aggregated, 'c_index')
-    print_results_table(aggregated, 'ibs')
-
-    print("\nExperiment completed!")
+    print("\n[提示] 该脚本现已重构为模块。")
+    print("请使用 'python experiments/main.py' 来解析命令行参数并运行实验。")
+    print("\n示例:")
+    print("  python experiments/main.py --quick")
+    print("  python experiments/main.py --models FlowSurv --groups E1 E2")
+    print("=" * 60)
