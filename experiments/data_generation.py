@@ -110,10 +110,13 @@ class WeibullMixtureGenerator:
         return pi1[:, np.newaxis] * S1 + (1 - pi1[:, np.newaxis]) * S2
     
     def hazard(self, t: np.ndarray, X: np.ndarray) -> np.ndarray:
-        """风险函数 h(t|x) = f(t|x) / S(t|x) (带数值稳定性保护)"""
+        """风险函数 h(t|x) = f(t|x) / S(t|x) (带数值稳定性保护)
+        
+        统一使用 1e-8 截断，与模型预测保持一致
+        """
         f = self.pdf(t, X)
         S = self.survival(t, X)
-        h = f / np.maximum(S, 1e-6)
+        h = f / np.maximum(S, 1e-8)
         return np.clip(h, 0.0, 1000.0)
     
     def median(self, X: np.ndarray) -> np.ndarray:
@@ -243,10 +246,13 @@ class GaussianMixtureGenerator:
         return pi1[:, np.newaxis] * S1 + (1 - pi1[:, np.newaxis]) * S2
     
     def hazard(self, t: np.ndarray, X: np.ndarray) -> np.ndarray:
-        """风险函数 (带数值稳定性保护)"""
+        """风险函数 (带数值稳定性保护)
+        
+        统一使用 1e-8 截断，与模型预测保持一致
+        """
         f = self.pdf(t, X)
         S = self.survival(t, X)
-        h = f / np.maximum(S, 1e-6)
+        h = f / np.maximum(S, 1e-8)
         return np.clip(h, 0.0, 1000.0)
     
     def median(self, X: np.ndarray) -> np.ndarray:
@@ -405,7 +411,7 @@ def generate_experiment_data(config, seed_offset: int = 0) -> Tuple[SurvivalData
 
 
 if __name__ == "__main__":
-    from experiments.config import DataConfig, print_config_summary
+    from config import DataConfig, print_config_summary
     
     print("测试数据生成模块")
     print("=" * 60)

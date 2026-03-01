@@ -16,11 +16,12 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from experiments.config import CONFIG, print_config_summary
-from experiments.run_experiments import (
+from config import CONFIG, print_config_summary
+from run_experiments import (
     run_all_experiments,
     aggregate_results,
-    print_results_table
+    print_results_table,
+    save_results_to_csv
 )
 
 
@@ -103,10 +104,18 @@ def main():
                       for m, metrics in models.items()}
                  for g, models in aggregated.items()},
                  f, indent=2, ensure_ascii=False)
-    print(f"\n聚合结果已保存至: {aggregated_file}")
+    print(f"\n聚合结果已保存至：{aggregated_file}")
+    
+    # 额外保存为 CSV 格式
+    print("\n正在保存 CSV 格式结果...")
+    detailed_csv, aggregated_csv = save_results_to_csv(results, args.output)
+    if detailed_csv:
+        print(f"详细结果 CSV: {detailed_csv}")
+    if aggregated_csv:
+        print(f"聚合结果 CSV: {aggregated_csv}")
 
     print("\n" + "=" * 70)
-    print(f"实验完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"实验完成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 70)
 
 

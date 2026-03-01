@@ -51,7 +51,8 @@ class RandomSurvivalForestWrapper(TorchSurvivalModel):
         device = features.device
         features_np = features.detach().cpu().numpy()
         risk_scores = self.model.predict(features_np)
-        return torch.from_numpy(risk_scores).to(device=device, dtype=torch.float32)
+        risk = torch.from_numpy(risk_scores).to(device=device, dtype=torch.float32)
+        return torch.nan_to_num(risk, nan=0.0, posinf=20.0, neginf=-20.0).float()
 
     def predict_survival_function(self, features: torch.Tensor, time_grid: torch.Tensor = None, **kwargs) -> torch.Tensor:
         if not self.is_fitted:
