@@ -6,6 +6,13 @@ from models.interface import TorchSurvivalModel
 
 
 class DeepHit(TorchSurvivalModel):
+    """
+    DeepHit 离散时间生存模型
+    
+    特点：直接预测离散时间点的事件概率
+    需要覆盖父类的 predict_survival_function, predict_time, compute_hazard_rate
+    """
+    
     def __init__(self, in_dim: int, config: Optional[dict] = None, **kwargs):
         super().__init__()
         self.config = config or {}
@@ -42,13 +49,14 @@ class DeepHit(TorchSurvivalModel):
             t_bins_norm = torch.linspace(-4.0, 4.0, self.num_bins, device=features.device)
             t_bins_raw = self._to_original_time(t_bins_norm)
             expected_t = torch.sum(probs * t_bins_raw[None, :], dim=1)
-            return -expected_t
+            risk = -expected_t
+            return torch.nan_to_num(risk, nan=0.0, posinf=20.0, neginf=-20.0).float()
 
     def predict_survival_function(self, features: torch.Tensor, time_grid: torch.Tensor = None, **kwargs) -> torch.Tensor:
         device = features.device
         with torch.no_grad():
             logits = self.net(features)
-            probs = F.softmax(logits, dim=-1)
+            probs = F.softmax(logits, dim=1)
             cum_probs = torch.cumsum(probs, dim=1)
             surv_points = F.pad(1.0 - cum_probs, (1, 0), value=1.0)
             if time_grid is None:
@@ -109,5 +117,6 @@ class DeepHit(TorchSurvivalModel):
             S_m, S_c, S_p = S[:, :n], S[:, n:2*n], S[:, 2*n:]
             pdf = (S_m - S_p) / (2 * dt)
             pdf = torch.clamp(pdf, min=0.0, max=1000.0)
-            h = pdf / torch.clamp(S_c, min=1e-4)
-            return torch.clamp(h, min=0.0, max=1000.0)
+            h = pdf / torch.clamp(S_c, min=1e-8)
+            h = torch.clamp(h, min=0.0, max=1000.0)
+            return torch.log(h + 1e-8)

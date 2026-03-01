@@ -5,6 +5,15 @@ from models.interface import TorchSurvivalModel
 
 
 class LinearCoxPH(TorchSurvivalModel):
+    """
+    线性 Cox 比例风险模型
+    
+    使用父类的:
+    - predict_survival_function (基于 Breslow 估计)
+    - _cox_predict_time (中位生存时间)
+    - _cox_compute_hazard_rate (对数风险函数)
+    """
+    
     def __init__(self, in_dim: int, config: Optional[dict] = None, **kwargs):
         super().__init__()
         self.risk_net = nn.Linear(in_dim, 1)
@@ -35,84 +44,11 @@ class LinearCoxPH(TorchSurvivalModel):
         self._train_log_haz = log_haz
 
     def predict_risk(self, features: torch.Tensor, **kwargs) -> torch.Tensor:
-        return self.risk_net(features).squeeze(-1)
-
-    def predict_survival_function(self, features: torch.Tensor, time_grid: torch.Tensor = None, **kwargs) -> torch.Tensor:
-        device = features.device
-        with torch.no_grad():
-            log_haz = self.predict_risk(features)
-            exp_haz = torch.exp(torch.clamp(log_haz, max=88.0))
-            if self._baseline_cum_haz is None:
-                if self._train_times is not None:
-                    self._fit_baseline_hazard(self._train_times, self._train_events, self._train_log_haz)
-                else:
-                    grid = time_grid.to(device) if time_grid is not None else torch.tensor([0.0], device=device)
-                    return torch.ones((features.shape[0], len(grid)), device=device)
-            if self._baseline_cum_haz.device != device:
-                self._baseline_cum_haz = self._baseline_cum_haz.to(device)
-                self._baseline_times = self._baseline_times.to(device)
-            grid = time_grid.to(device) if time_grid is not None else self._baseline_times
-            indices = torch.searchsorted(self._baseline_times, grid)
-            indices = torch.clamp(indices, 0, len(self._baseline_cum_haz) - 1)
-            baseline_interp = self._baseline_cum_haz[indices]
-            cum_haz = exp_haz.unsqueeze(1) * baseline_interp.unsqueeze(0)
-            return torch.exp(-cum_haz)
+        risk = self.risk_net(features).squeeze(-1)
+        return torch.nan_to_num(risk, nan=0.0, posinf=20.0, neginf=-20.0).float()
 
     def predict_time(self, features: torch.Tensor, **kwargs) -> torch.Tensor:
-        device = features.device
-        with torch.no_grad():
-            if self._baseline_times is None:
-                if self._train_times is not None:
-                    self._fit_baseline_hazard(self._train_times, self._train_events, self._train_log_haz)
-                else:
-                    return torch.full((features.shape[0],), float('nan'), device=device)
-            if self._baseline_times.device != device:
-                self._baseline_times = self._baseline_times.to(device)
-                self._baseline_cum_haz = self._baseline_cum_haz.to(device)
-            t_max = self._baseline_times[-1] * 2
-            grid = torch.linspace(0, t_max, 200, device=device)
-            log_haz = self.predict_risk(features)
-            exp_haz = torch.exp(log_haz)
-            indices = torch.searchsorted(self._baseline_times, grid)
-            indices = torch.clamp(indices, 0, len(self._baseline_cum_haz) - 1)
-            baseline_interp = self._baseline_cum_haz[indices]
-            S_grid = torch.exp(-(exp_haz.unsqueeze(1) * baseline_interp.unsqueeze(0)))
-            idx = torch.searchsorted(-S_grid, torch.full((features.shape[0], 1), -0.5, device=device)).squeeze(1)
-            medians = torch.zeros(features.shape[0], device=device)
-            mid = (idx > 0) & (idx < 199)
-            medians[idx == 0] = grid[0]
-            medians[idx >= 199] = grid[-1]
-            if mid.any():
-                i_r = idx[mid]
-                i_l = i_r - 1
-                t1, t2 = grid[i_l], grid[i_r]
-                s1, s2 = S_grid[mid, i_l], S_grid[mid, i_r]
-                denom = s2 - s1
-                mask_stable = torch.abs(denom) > 1e-10
-                m_mid = torch.zeros_like(t1)
-                m_mid[mask_stable] = t1[mask_stable] + (t2[mask_stable] - t1[mask_stable]) * (0.5 - s1[mask_stable]) / denom[mask_stable]
-                m_mid[~mask_stable] = (t1[~mask_stable] + t2[~mask_stable]) / 2
-                medians[mid] = m_mid
-            return medians
+        return self._cox_predict_time(features)
 
     def compute_hazard_rate(self, features: torch.Tensor, time_grid: torch.Tensor, **kwargs) -> torch.Tensor:
-        device = features.device
-        time_grid = time_grid.to(device)
-        with torch.no_grad():
-            log_haz = self.predict_risk(features)
-            exp_haz = torch.exp(torch.clamp(log_haz, max=88.0))
-            if self._baseline_cum_haz is None:
-                return torch.zeros((features.shape[0], len(time_grid)), device=device)
-            if self._baseline_times.device != device:
-                self._baseline_times = self._baseline_times.to(device)
-                self._baseline_cum_haz = self._baseline_cum_haz.to(device)
-            times_ext = torch.cat([torch.zeros(1, device=device), self._baseline_times])
-            haz_ext = torch.cat([torch.zeros(1, device=device), self._baseline_cum_haz])
-            dt = torch.diff(times_ext)
-            dh = torch.diff(haz_ext)
-            baseline_h = dh / torch.clamp(dt, min=1e-10)
-            indices = torch.searchsorted(self._baseline_times, time_grid)
-            indices = torch.clamp(indices, 0, len(baseline_h) - 1)
-            h0_interp = baseline_h[indices]
-            hazard = exp_haz.unsqueeze(1) * h0_interp.unsqueeze(0)
-            return torch.clamp(hazard, min=0.0, max=1000.0)
+        return self._cox_compute_hazard_rate(features, time_grid)

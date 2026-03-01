@@ -15,6 +15,15 @@ from models.flowmodel.components import (
 
 
 class FlowSurv(TorchSurvivalModel):
+    """
+    Flow-based 生存模型
+    
+    统一接口:
+    - compute_log_density: 返回 log f(t|x)
+    - compute_hazard_rate: 返回 log h(t|x)
+    - predict_survival_function: 返回 S(t|x)
+    """
+    
     def __init__(self, in_dim: int, config: Optional[dict] = None, **kwargs):
         super().__init__()
         self.config = config if config is not None else kwargs
@@ -80,27 +89,19 @@ class FlowSurv(TorchSurvivalModel):
         return self.vector_field[-1](h)
 
     def _inverse_flow_with_integral(self, t1: torch.Tensor, mod_params: torch.Tensor, ode_steps: int = 100):
-        """
-        反向 ODE 求解并同时计算散度积分 (用于密度估计)
-        使用更高效的数值方法替代手动循环
-        """
         tau_span = torch.linspace(1.0, 0.0, ode_steps, device=t1.device)
         dt = tau_span[1] - tau_span[0]
         
         curr_t = t1.clone()
         integral = torch.zeros(t1.size(0), 1, device=t1.device)
         
-        # 预先计算步长, 减少循环内运算
         for i in range(len(tau_span) - 1):
             tau = tau_span[i]
             t_in = curr_t.detach().requires_grad_(True)
             
-            # 计算向量场
             tau_batch = torch.full((t1.size(0),), float(tau), device=t1.device)
             v = self.vf_forward(tau_batch, t_in, mod_params)
             
-            # 批量化计算散度 (Divergence): div(v) = d v_i / d x_i
-            # 对于一维生存时间, 散度就是简单的导数
             div_v = torch.autograd.grad(
                 v, t_in, 
                 grad_outputs=torch.ones_like(v),
@@ -112,13 +113,14 @@ class FlowSurv(TorchSurvivalModel):
             if div_v is None:
                 div_v = torch.zeros_like(curr_t)
             
-            # 数值稳定性保护
-            v_val = torch.clamp(v.detach(), min=-100.0, max=100.0)
-            div_v_val = torch.clamp(div_v.detach(), min=-100.0, max=100.0)
+            v_val = torch.clamp(v.detach(), min=-50.0, max=50.0)
+            div_v_val = torch.clamp(div_v.detach(), min=-50.0, max=50.0)
             
-            # 改进的 Euler 步 (Heun's method 思想或简单的稳定更新)
             curr_t = curr_t + v_val * dt
+            curr_t = torch.clamp(curr_t, min=-15.0, max=15.0)
+            
             integral = integral + div_v_val * dt
+            integral = torch.clamp(integral, min=-100.0, max=100.0)
             
         return curr_t.detach(), integral
 
@@ -202,85 +204,114 @@ class FlowSurv(TorchSurvivalModel):
             t_raw = self._to_original_time(t1_norm.squeeze(-1)).view(B, n_samples)
             return t_raw.median(dim=1)[0] if mode == 'median' else t_raw.mean(dim=1)
 
-    def compute_density(self, features: torch.Tensor, time_grid: torch.Tensor,
-                        ode_steps: int = 100, batch_size_limit: int = 50000) -> torch.Tensor:
+    def compute_log_density(self, features: torch.Tensor, time_grid: torch.Tensor,
+                            ode_steps: int = 100, batch_size_limit: int = 50000) -> torch.Tensor:
+        """
+        计算对数密度函数 log f(t|x)
+        """
         self.eval()
         device = features.device
         mod_params = self.get_film(features)
         time_grid = time_grid.to(device)
         num_times = time_grid.shape[0]
+        
         if self.is_log_space:
-            jacobians = 1.0 / (self.time_scaler_std * torch.clamp(time_grid + 1.0, min=1e-2))
+            log_jacobians = -torch.log(self.time_scaler_std) - torch.log(torch.clamp(time_grid + 1.0, min=1e-2))
         else:
-            jacobians = torch.full_like(time_grid, 1.0 / self.time_scaler_std)
-        jacobians = torch.clamp(jacobians, min=0.0, max=1000.0)
+            log_jacobians = torch.full_like(time_grid, -torch.log(torch.tensor(self.time_scaler_std, device=device)))
+        
         t_norm_grid = self._to_normalized_time(time_grid)
-        all_densities = []
+        all_log_densities = []
         N = features.size(0)
         chunk_size = max(1, batch_size_limit // N)
+        
         for i in range(0, num_times, chunk_size):
             end_i = min(i + chunk_size, num_times)
             curr_norm = t_norm_grid[i:end_i]
             n_curr = end_i - i
             curr_mod = mod_params.unsqueeze(1).expand(-1, n_curr, -1).reshape(-1, mod_params.size(-1))
             t1 = curr_norm.unsqueeze(0).expand(N, -1).reshape(-1, 1)
+            
             with torch.enable_grad():
                 t0, integral = self._inverse_flow_with_integral(t1, curr_mod, ode_steps)
                 log_p0 = self.prior.log_prob(t0)
                 log_f_norm = log_p0 - integral
                 log_f_norm = torch.clamp(log_f_norm, min=-88.0, max=88.0)
-                f_norm = torch.exp(log_f_norm).view(N, n_curr)
-            f_phys = f_norm * jacobians[i:end_i].unsqueeze(0)
-            f_phys = torch.clamp(f_phys, min=0.0, max=1000.0)
-            all_densities.append(f_phys)
-        return torch.cat(all_densities, dim=1)
+                log_f_phys = log_f_norm.view(N, n_curr) + log_jacobians[i:end_i].unsqueeze(0)
+            
+            all_log_densities.append(log_f_phys)
+        
+        return torch.cat(all_log_densities, dim=1)
 
     def predict_survival_function(self, features: torch.Tensor, time_grid: Optional[torch.Tensor] = None, 
                                   ode_steps: int = 100, t_max: Optional[float] = None) -> torch.Tensor:
         self.eval()
         device = features.device
         if time_grid is None:
-            # 改进默认 time_grid 逻辑
             if t_max is None:
-                # 默认使用 10.0, 但如果 scaler 显示标准差很大, 则相应扩大范围
-                # 这是一个启发式策略: max(20.0, mean + 5*std)
                 t_max = max(20.0, float(self.time_scaler_mean + 5 * self.time_scaler_std))
             time_grid = torch.linspace(0, t_max, 100, device=device)
         else:
             time_grid = time_grid.to(device)
         time_grid, _ = torch.sort(time_grid)
+        
         if time_grid.numel() == 0 or time_grid[0] > 1e-6:
             full_grid = torch.cat([torch.zeros(1, device=device), time_grid])
             add_zero = True
         else:
             full_grid = time_grid
             add_zero = False
-        f_full = self.compute_density(features, full_grid, ode_steps)
+        
+        log_f = self.compute_log_density(features, full_grid, ode_steps)
         dt = torch.diff(full_grid)
-        dt = torch.clamp(dt, min=1e-4)
-        areas = 0.5 * (f_full[:, :-1] + f_full[:, 1:]) * dt.unsqueeze(0)
-        cdf = torch.zeros_like(f_full)
-        cdf[:, 1:] = torch.cumsum(areas, dim=1)
-        cdf = torch.clamp(cdf, min=0.0, max=1.0)
-        s_full = torch.clamp(1.0 - cdf, min=0.0, max=1.0)
+        dt = torch.clamp(dt, min=1e-10)
+        
+        log_areas = []
+        for j in range(len(dt)):
+            log_sum_f = torch.logsumexp(torch.stack([log_f[:, j], log_f[:, j+1]]), dim=0)
+            log_area = log_sum_f + torch.log(dt[j]) - torch.log(torch.tensor(2.0, device=device))
+            log_areas.append(log_area)
+        
+        log_areas = torch.stack(log_areas, dim=1)
+        
+        log_survival_list = []
+        for i in range(log_areas.shape[1]):
+            log_S_i = torch.logsumexp(log_areas[:, i:], dim=1, keepdim=True)
+            log_survival_list.append(log_S_i)
+        
+        log_survival = torch.cat(log_survival_list, dim=1)
+        log_S0 = torch.zeros((features.size(0), 1), device=device)
+        log_survival_full = torch.cat([log_S0, log_survival], dim=1)
+        
+        s_full = torch.exp(torch.clamp(log_survival_full, min=-88, max=0))
+        s_full = torch.clamp(s_full, min=0.0, max=1.0)
+        
         return s_full[:, 1:] if add_zero else s_full
 
-    def predict_risk(self, features: torch.Tensor, time_grid: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+    def predict_risk(self, features: torch.Tensor, _time_grid: Optional[torch.Tensor] = None, **_kwargs) -> torch.Tensor:
         pred_medians = self.predict_time(features, mode='median')
-        return -pred_medians
+        pred_medians = torch.nan_to_num(pred_medians, nan=0.0, posinf=20.0, neginf=-20.0)
+        return -pred_medians.float()
 
     def predict_survival_metrics(self, features: torch.Tensor, time_grid: torch.Tensor, 
                                  ode_steps: int = 100, t_max: Optional[float] = None):
+        log_f = self.compute_log_density(features, time_grid, ode_steps)
         s = self.predict_survival_function(features, time_grid, ode_steps, t_max=t_max)
-        f = self.compute_density(features, time_grid, ode_steps)
-        f_clamped = torch.clamp(f, min=0.0, max=1000.0)
-        h = f_clamped / torch.clamp(s, min=1e-4)
-        h = torch.clamp(h, min=0.0, max=1000.0)
-        H = -torch.log(torch.clamp(s, min=1e-6, max=1.0))
+        log_s = torch.log(torch.clamp(s, min=1e-100, max=1.0))
+        log_h = log_f - log_s
+        log_h = torch.clamp(log_h, min=-20, max=20)
+        H = -log_s
         H = torch.clamp(H, min=0.0, max=100.0)
-        return {'density': f, 'hazard': h, 'cum_hazard': H, 'survival': s}
+        
+        return {
+            'log_density': log_f, 
+            'log_hazard': log_h, 
+            'cum_hazard': H, 
+            'survival': s,
+            'log_survival': log_s
+        }
 
-    def compute_hazard_rate(self, features: torch.Tensor, time_grid: torch.Tensor, **kwargs) -> torch.Tensor:
-        ode_steps = kwargs.get('ode_steps', 100)
+    def compute_hazard_rate(self, features: torch.Tensor, time_grid: torch.Tensor, **_kwargs) -> torch.Tensor:
+        ode_steps = _kwargs.get('ode_steps', 100)
         metrics = self.predict_survival_metrics(features, time_grid, ode_steps)
-        return metrics['hazard']
+        return metrics['log_hazard']

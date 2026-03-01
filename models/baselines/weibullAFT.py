@@ -5,6 +5,13 @@ from models.interface import TorchSurvivalModel
 
 
 class WeibullAFT(TorchSurvivalModel):
+    """
+    Weibull 加速失效时间模型
+    
+    特点：参数化模型，有解析形式的生存函数和风险函数
+    需要覆盖父类的 predict_survival_function, predict_time, compute_hazard_rate
+    """
+    
     def __init__(self, in_dim: int, config: Optional[dict] = None, **kwargs):
         super().__init__()
         self.config = config or {}
@@ -38,7 +45,8 @@ class WeibullAFT(TorchSurvivalModel):
         with torch.no_grad():
             params = self.net(features)
             log_lambda = torch.clamp(params[:, 1], -5, 5)
-            return -log_lambda
+            risk = -log_lambda
+            return torch.nan_to_num(risk, nan=0.0, posinf=20.0, neginf=-20.0).float()
 
     def predict_survival_function(self, features: torch.Tensor, time_grid: torch.Tensor = None, **kwargs) -> torch.Tensor:
         device = features.device
@@ -73,4 +81,5 @@ class WeibullAFT(TorchSurvivalModel):
             t = time_grid.unsqueeze(0)
             t_lam = t / lam
             h = (k / lam) * torch.pow(t_lam, k - 1)
-            return torch.clamp(h, min=0.0, max=1000.0)
+            h = torch.clamp(h, min=0.0, max=1000.0)
+            return torch.log(h + 1e-8)

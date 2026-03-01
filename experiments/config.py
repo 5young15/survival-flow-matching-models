@@ -1,3 +1,24 @@
+"""
+生存分析实验配置模块
+
+功能说明:
+- 定义数据生成、模型超参数、实验设计、绘图等配置
+- 支持 10 种不同实验场景 (PH/NPH、高删失、小样本、高噪声、大样本等)
+- 使用 dataclass 进行类型安全的配置管理
+- 提供配置摘要打印功能
+
+配置项:
+- DataConfig: 数据生成参数
+- ModelConfig: 模型超参数
+- PlotConfig: 绘图参数
+- ExperimentGroup: 单个实验组配置
+- ExperimentConfig: 实验总配置
+- GlobalConfig: 全局配置汇总
+
+作者：Statistical Modeling Team
+日期：2026
+"""
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 import torch
@@ -6,7 +27,43 @@ import numpy as np
 
 @dataclass
 class DataConfig:
-    """数据生成配置"""
+    """
+    数据生成配置
+    
+    用于控制生存模拟数据的生成参数，包括:
+    - 样本量、特征维度、噪声水平
+    - 删失率、分布类型 (Weibull 单峰/混合、高斯混合)
+    - PH/NPH 假设
+    - 分布形状参数
+    
+    属性:
+        n_samples: 样本数量
+        n_features: 特征总数
+        n_signal_features: 有预测能力的信号特征数量
+        noise_std: 高斯噪声标准差
+        censoring_rate: 目标删失率 (0-1 之间)
+        distribution_type: 生存时间分布类型
+        is_ph: 是否满足比例风险 (Proportional Hazards) 假设
+        random_seed: 随机种子
+        
+        # Weibull 混合分布参数
+        weibull_k1: 第一个 Weibull 成分的形状参数
+        weibull_k2: 第二个 Weibull 成分的形状参数
+        weibull_lambda1_base: 第一个 Weibull 成分的基准尺度参数
+        weibull_lambda2_base: 第二个 Weibull 成分的基准尺度参数
+        mixture_weight_base: 混合权重基准值
+        
+        # 高斯混合分布参数 (对数时间域)
+        gaussian_mu1_base: 第一个高斯成分的均值基准
+        gaussian_mu2_base: 第二个高斯成分的均值基准
+        gaussian_sigma1: 第一个高斯成分的标准差
+        gaussian_sigma2: 第二个高斯成分的标准差
+        gaussian_mixture_weight: 混合权重
+        
+        # 协变量效应系数
+        beta_linear: 线性协变量效应系数
+        beta_nonlinear: 非线性协变量效应系数
+    """
     n_samples: int = 2000
     n_features: int = 5
     n_signal_features: int = 2
@@ -16,7 +73,7 @@ class DataConfig:
     is_ph: bool = True
     random_seed: int = 42
     
-    # Weibull混合参数
+    # Weibull 混合参数
     weibull_k1: float = 1.5
     weibull_k2: float = 3.0
     weibull_lambda1_base: float = 1.0
@@ -35,7 +92,19 @@ class DataConfig:
     beta_nonlinear: float = 0.3
     
     def get_censoring_lambda(self) -> float:
-        """根据目标删失率计算指数删失参数"""
+        """
+        根据目标删失率计算指数删失分布的参数 lambda
+        
+        原理:
+        假设删失时间服从指数分布 C ~ Exp(λ_c), 则:
+        P(C > t) = exp(-λ_c * t)
+        
+        为使平均删失率达到目标值，近似计算:
+        λ_c ≈ -log(1 - censoring_rate) / E[T]
+        
+        返回:
+            指数删失分布的参数 lambda
+        """
         return -np.log(1 - self.censoring_rate + 1e-6) / 3.0
 
 
@@ -56,7 +125,7 @@ class ModelConfig:
         'DeepSurv': {
             'hidden_dims': [64, 32, 16, 8],
             'dropout': 0.1,
-            'LR': 8e-5,
+            'LR': 1e-4,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
             'PATIENCE': 10,
@@ -65,7 +134,7 @@ class ModelConfig:
         'WeibullAFT': {
             'hidden_dims': [32, 16],
             'dropout': 0.0,
-            'LR': 5e-8,
+            'LR': 5e-5,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
             'PATIENCE': 15,
@@ -95,7 +164,7 @@ class ModelConfig:
             'film_hidden': [16],
             'sigma': 0.1,
             'dropout': 0.1,
-            'LR': 8e-5,
+            'LR': 1e-4,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
             'PATIENCE': 10,
@@ -112,7 +181,7 @@ class ModelConfig:
             'tau_dim': 32,
             'encoder_hidden': [32, 16],
             'film_hidden': [16],
-            'weibull_head_hidden': [16],
+            'gumbel_head_hidden': [16],
             'sigma': 0.1,
             'dropout': 0.1,
             'LR': 1e-4,
@@ -120,7 +189,7 @@ class ModelConfig:
             'EPOCHS': 200,
             'PATIENCE': 10,
             'WEIGHT_DECAY': 1e-5,
-            'WEIBULL_LR': 5e-8,
+            'WEIBULL_LR': 5e-5,
             'WEIBULL_EPOCHS': 200,
             'WEIBULL_BATCH_SIZE': 64,
             'WEIBULL_PATIENCE': 15,
